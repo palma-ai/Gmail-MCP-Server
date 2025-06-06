@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
+import express from "express";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -21,6 +23,7 @@ import {
   getOrCreateLabel,
   GmailLabel,
 } from "./label-manager.js";
+import { Request, Response } from "express";
 
 // Type definitions for Gmail API responses
 interface GmailMessagePart {
@@ -238,16 +241,19 @@ const BatchDeleteEmailsSchema = z.object({
     .describe("Number of messages to process in each batch (default: 50)"),
 });
 
-// Main function
-async function main() {
-  // Server implementation
-  const server = new Server({
-    name: "gmail",
-    version: "1.0.0",
-    capabilities: {
-      tools: {},
+// Server factory function
+function getServer(): Server {
+  const server = new Server(
+    {
+      name: "gmail",
+      version: "1.0.0",
     },
-  });
+    {
+      capabilities: {
+        tools: {},
+      },
+    }
+  );
 
   // Tool handlers
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -862,11 +868,110 @@ async function main() {
     }
   );
 
-  const transport = new StdioServerTransport();
-  server.connect(transport);
+  return server;
 }
 
-main().catch((error) => {
-  console.error("Server error:", error);
-  process.exit(1);
+// Express server setup
+const app = express();
+app.use(express.json());
+
+// Middleware to handle bearer token authentication and
+// inject user data into the request context.
+const tokenMiddleware = requireBearerAuth({
+  requiredScopes: ["default"],
+  resourceMetadataUrl: "https://oauth2.googleapis.com/tokeninfo",
+  verifier: {
+    verifyAccessToken: async (token: string) => {
+      // Here you would typically verify the token with your OAuth server
+      // For this example, we will just return a mock user data.
+      const tokenRes = {
+        user_id: "12345",
+        client_id: "client-123",
+        scope: ["default"],
+      };
+
+      return {
+        token,
+        clientId: tokenRes?.client_id,
+        scopes: tokenRes?.scope,
+        // Include any extra data you want to use in the tool handlers
+        extra: {
+          userId: tokenRes?.user_id,
+        },
+      };
+    },
+  },
+});
+
+app.post("/mcp", async (req: Request, res: Response) => {
+  // In stateless mode, create a new instance of transport and server for each request
+  // to ensure complete isolation. A single instance would cause request ID collisions
+  // when multiple clients connect concurrently.
+
+  try {
+    console.log("Creating server");
+    const server = getServer();
+    console.log("Creating transport");
+    const transport: StreamableHTTPServerTransport =
+      new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+      });
+    res.on("close", () => {
+      console.log("Request closed");
+      transport.close();
+      server.close();
+    });
+    console.log("Connecting to server");
+    await server.connect(transport);
+    console.log("Request received", req.body);
+    await transport.handleRequest(req, res, req.body);
+  } catch (error) {
+    console.error("Error handling MCP request:", error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32603,
+          message: "Internal server error",
+        },
+        id: null,
+      });
+    }
+  }
+});
+
+app.get("/mcp", async (req: Request, res: Response) => {
+  console.log("Received GET MCP request");
+  res.writeHead(405).end(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      error: {
+        code: -32000,
+        message: "Method not allowed.",
+      },
+      id: null,
+    })
+  );
+});
+
+app.delete("/mcp", async (req: Request, res: Response) => {
+  console.log("Received DELETE MCP request");
+  res.writeHead(405).end(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      error: {
+        code: -32000,
+        message: "Method not allowed.",
+      },
+      id: null,
+    })
+  );
+});
+
+// Start the server
+const PORT = process.env.PORT || 3010;
+app.listen(PORT, () => {
+  console.log(
+    `Gmail MCP Stateless Streamable HTTP Server listening on port ${PORT}`
+  );
 });

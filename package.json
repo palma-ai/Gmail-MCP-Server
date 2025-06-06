@@ -1,7 +1,7 @@
 {
   "name": "@gongrzhe/server-gmail-autoauth-mcp",
   "version": "1.1.9",
-  "description": "Gmail MCP server with auto authentication support",
+  "description": "Gmail MCP HTTP server with Express and per-request authentication support",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -10,7 +10,9 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "auth": "node dist/index.js auth",
+    "dev": "tsx src/index.ts",
+    "dev:watch": "tsx watch src/index.ts",
+    "test:server": "node scripts/test-server.js",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
@@ -27,7 +29,9 @@
     "model-context-protocol",
     "google-gmail",
     "claude",
-    "auto-auth"
+    "auto-auth",
+    "express",
+    "http-server"
   ],
   "author": "gongrzhe",
   "license": "ISC",
@@ -47,6 +51,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
+    "@types/express": "^5.0.2",
+    "express": "^5.1.0",
     "google-auth-library": "^9.4.1",
     "googleapis": "^129.0.0",
     "mcp-evals": "^1.0.18",
@@ -56,6 +62,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.10.5",
+    "tsx": "^4.19.4",
     "typescript": "^5.3.3"
   }
 }
