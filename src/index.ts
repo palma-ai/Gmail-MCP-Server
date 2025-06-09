@@ -942,19 +942,17 @@ const tokenMiddleware = requireBearerAuth({
   requiredScopes: ["https://www.googleapis.com/auth/gmail.modify"],
   verifier: {
     verifyAccessToken: async (token: string): Promise<AuthInfo> => {
-      console.log("Verifying token", token);
-
       // Use Google's tokeninfo endpoint to verify the token
       const response = await fetch(
         `https://oauth2.googleapis.com/tokeninfo?access_token=${token}`
       );
 
-      console.log("Response status", response.status);
+      // Important: IF not MCP client will not refresh tokens
+      if (!response.ok && [400, 401].includes(response.status)) {
+        throw new InvalidTokenError("Invalid token");
+      }
 
       if (!response.ok) {
-        if ([400, 401].includes(response.status)) {
-          throw new InvalidTokenError("Invalid token");
-        }
         throw new InvalidTokenError(
           `Token verification failed with status ${response.status}`
         );
