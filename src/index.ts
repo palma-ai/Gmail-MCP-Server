@@ -4,6 +4,8 @@ import express from "express";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
+import { InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import { mcpAuthMetadataRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -875,35 +877,104 @@ function getServer(): Server {
 const app = express();
 app.use(express.json());
 
-// Middleware to handle bearer token authentication and
-// inject user data into the request context.
-const tokenMiddleware = requireBearerAuth({
-  requiredScopes: ["default"],
-  resourceMetadataUrl: "https://oauth2.googleapis.com/tokeninfo",
-  verifier: {
-    verifyAccessToken: async (token: string) => {
-      // Here you would typically verify the token with your OAuth server
-      // For this example, we will just return a mock user data.
-      const tokenRes = {
-        user_id: "12345",
-        client_id: "client-123",
-        scope: ["default"],
-      };
+// Get server configuration from environment variables
+const SERVER_PORT = process.env.PORT || 3010;
+const SERVER_HOST = process.env.SERVER_HOST || "localhost";
 
+// Google OAuth 2.0 endpoints and metadata
+const googleOAuthMetadata = {
+  issuer: "https://accounts.google.com",
+  authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth",
+  token_endpoint: "https://oauth2.googleapis.com/token",
+  userinfo_endpoint: "https://openidconnect.googleapis.com/v1/userinfo",
+  revocation_endpoint: "https://oauth2.googleapis.com/revoke",
+  jwks_uri: "https://www.googleapis.com/oauth2/v3/certs",
+  response_types_supported: ["code"],
+  subject_types_supported: ["public"],
+  id_token_signing_alg_values_supported: ["RS256"],
+  scopes_supported: [
+    "openid",
+    "email",
+    "profile",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.labels",
+    "https://www.googleapis.com/auth/gmail.send",
+  ],
+  token_endpoint_auth_methods_supported: [
+    "client_secret_basic",
+    "client_secret_post",
+  ],
+  claims_supported: [
+    "aud",
+    "email",
+    "email_verified",
+    "exp",
+    "family_name",
+    "given_name",
+    "iat",
+    "iss",
+    "locale",
+    "name",
+    "picture",
+    "sub",
+  ],
+  code_challenge_methods_supported: ["S256"],
+  grant_types_supported: ["authorization_code", "refresh_token"],
+};
+
+// Set up OAuth metadata routes - points clients to Google's OAuth servers
+const resourceServerUrl = new URL(`http://${SERVER_HOST}:${SERVER_PORT}`);
+app.use(
+  mcpAuthMetadataRouter({
+    oauthMetadata: googleOAuthMetadata,
+    resourceServerUrl,
+    scopesSupported: [
+      "https://www.googleapis.com/auth/gmail.modify",
+      "https://www.googleapis.com/auth/gmail.labels",
+      "https://www.googleapis.com/auth/gmail.send",
+    ],
+    resourceName: "Gmail MCP Server",
+  })
+);
+
+// Middleware to handle bearer token authentication with Google token verification
+const tokenMiddleware = requireBearerAuth({
+  requiredScopes: ["https://www.googleapis.com/auth/gmail.modify"],
+  verifier: {
+    verifyAccessToken: async (token: string): Promise<AuthInfo> => {
+      console.log("Verifying token", token);
+
+      // Use Google's tokeninfo endpoint to verify the token
+      const response = await fetch(
+        `https://oauth2.googleapis.com/tokeninfo?access_token=${token}`
+      );
+
+      console.log("Response status", response.status);
+
+      if (!response.ok) {
+        if ([400, 401].includes(response.status)) {
+          throw new InvalidTokenError("Invalid token");
+        }
+        throw new InvalidTokenError(
+          `Token verification failed with status ${response.status}`
+        );
+      }
+
+      const tokenInfo = await response.json();
+
+      // Google's tokeninfo endpoint validates the token for us
+      // No need to check client ID since we accept any valid Google token
       return {
         token,
-        clientId: tokenRes?.client_id,
-        scopes: tokenRes?.scope,
-        // Include any extra data you want to use in the tool handlers
-        extra: {
-          userId: tokenRes?.user_id,
-        },
+        clientId: tokenInfo.aud || "google",
+        scopes: tokenInfo.scope ? tokenInfo.scope.split(" ") : ["gmail"],
+        expiresAt: tokenInfo.exp ? parseInt(tokenInfo.exp) : undefined,
       };
     },
   },
 });
 
-app.post("/mcp", async (req: Request, res: Response) => {
+app.post("/mcp", tokenMiddleware, async (req: Request, res: Response) => {
   // In stateless mode, create a new instance of transport and server for each request
   // to ensure complete isolation. A single instance would cause request ID collisions
   // when multiple clients connect concurrently.
@@ -969,9 +1040,33 @@ app.delete("/mcp", async (req: Request, res: Response) => {
 });
 
 // Start the server
-const PORT = process.env.PORT || 3010;
-app.listen(PORT, () => {
+app.listen(SERVER_PORT, () => {
   console.log(
-    `Gmail MCP Stateless Streamable HTTP Server listening on port ${PORT}`
+    `Gmail MCP Stateless Streamable HTTP Server listening on port ${SERVER_PORT}`
+  );
+  console.log(
+    `OAuth Protected Resource Metadata: ${resourceServerUrl.origin}/.well-known/oauth-protected-resource`
+  );
+  console.log(
+    `OAuth Authorization Server Metadata: ${resourceServerUrl.origin}/.well-known/oauth-authorization-server`
+  );
+  console.log(
+    `Google OAuth Authorization Endpoint: ${googleOAuthMetadata.authorization_endpoint}`
+  );
+  console.log(
+    `Google OAuth Token Endpoint: ${googleOAuthMetadata.token_endpoint}`
+  );
+  console.log("");
+  console.log("Optional environment variables:");
+  console.log("- PORT: Server port (default: 3010)");
+  console.log("- SERVER_HOST: Server hostname (default: localhost)");
+  console.log("");
+  console.log("The MCP client will:");
+  console.log("1. Discover metadata from your server");
+  console.log("2. Be directed to Google's OAuth servers for authentication");
+  console.log("3. Send Google access tokens to your server for API calls");
+  console.log("");
+  console.log(
+    "Note: Google OAuth client credentials are configured in the MCP client, not this server."
   );
 });
