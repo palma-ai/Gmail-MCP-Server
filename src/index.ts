@@ -942,6 +942,7 @@ const tokenMiddleware = requireBearerAuth({
   requiredScopes: ["https://www.googleapis.com/auth/gmail.modify"],
   verifier: {
     verifyAccessToken: async (token: string): Promise<AuthInfo> => {
+      console.log("Verifying token", token);
       // Use Google's tokeninfo endpoint to verify the token
       const response = await fetch(
         `https://oauth2.googleapis.com/tokeninfo?access_token=${token}`
